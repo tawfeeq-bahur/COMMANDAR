@@ -1,0 +1,6 @@
+{
+  "name": "Personal AI Status Assistant",
+  "description": "An AI-powered personal assistant that manages your status and automatically replies to WhatsApp notifications based on custom rules and schedule automation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
