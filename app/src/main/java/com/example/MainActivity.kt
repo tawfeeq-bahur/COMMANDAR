@@ -850,8 +850,8 @@ fun DashboardScreen(viewModel: AppViewModel) {
 
         // Gamification / Level & XP Card
         item {
-            val userXp = settings?.currentXp ?: 2450
-            val userLevel = settings?.userLevel ?: 12
+            val userXp = settings?.currentXp ?: 0
+            val userLevel = settings?.userLevel ?: 1
             val progress = (userXp % 1000) / 1000f
 
             Card(
@@ -882,7 +882,8 @@ fun DashboardScreen(viewModel: AppViewModel) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(imageVector = Icons.Filled.LocalFireDepartment, contentDescription = "Streak", tint = Color(0xFFFF9500))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("28 Day Streak", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                            val overallStreak = settings?.streakDays ?: 0
+                            Text("$overallStreak Day Streak", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                         }
                     }
                     Spacer(modifier = Modifier.height(12.dp))
@@ -1457,18 +1458,20 @@ fun HabitsScreen(viewModel: AppViewModel) {
                                        color = if (isChecked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                    )
                                    Spacer(modifier = Modifier.height(2.dp))
-                                   Text(
-                                       text = when(habit.name.lowercase()) {
-                                           "gym" -> "Daily fitness & exercise • 12 Day Streak"
-                                           "minoxidil" -> "Hair & skin routine • 28 Day Streak"
-                                           "read 20 mins" -> "Daily reading habit • 7 Day Streak"
-                                           "fajr" -> "Morning prayer routine • 112 Day Streak"
-                                           "dhuhr" -> "Noon prayer routine • 112 Day Streak"
-                                           else -> "Daily routine checklist"
-                                       },
-                                       style = MaterialTheme.typography.bodySmall,
-                                       color = MaterialTheme.colorScheme.onSurfaceVariant
-                                   )
+                                   val desc = when(habit.name.lowercase()) {
+                                        "gym" -> "Daily fitness & exercise"
+                                        "minoxidil" -> "Hair & skin routine"
+                                        "read 20 mins" -> "Daily reading habit"
+                                        "fajr" -> "Morning prayer routine"
+                                        "dhuhr" -> "Noon prayer routine"
+                                        "coding practice" -> "Coding & logic practice"
+                                        else -> "Daily routine checklist"
+                                    }
+                                    Text(
+                                        text = "$desc • ${habit.streakDays} Day Streak",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                }
                             }
                             
