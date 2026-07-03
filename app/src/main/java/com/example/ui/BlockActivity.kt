@@ -38,7 +38,7 @@ class BlockActivity : ComponentActivity() {
             val blockedApp = intent.getStringExtra("BLOCKED_APP") ?: "Social Media"
 
             LaunchedEffect(Unit) {
-                while (FocusTimerService.isSessionActive) {
+                while (FocusTimerService.isSessionActive && FocusTimerService.isSessionStrictMode) {
                     remainingSeconds = FocusTimerService.sessionRemainingSeconds
                     kotlinx.coroutines.delay(1000)
                 }

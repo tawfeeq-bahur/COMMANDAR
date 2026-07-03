@@ -36,6 +36,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _currentScreen = MutableStateFlow("LOGIN") // LOGIN, REGISTER, FORGOT, DASHBOARD, FOCUS, HABITS, ACTIVITY, SETTINGS
     val currentScreen: StateFlow<String> = _currentScreen.asStateFlow()
 
+    private val _isSessionStrictMode = MutableStateFlow(false)
+    val isSessionStrictMode: StateFlow<Boolean> = _isSessionStrictMode.asStateFlow()
+
     // --- Flows from Repository ---
     val statuses: StateFlow<List<StatusEntity>> = repository.statusesFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -103,11 +106,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     _focusRemainingSeconds.value = intent.getIntExtra("REMAINING", 0)
                     _focusTotalSeconds.value = intent.getIntExtra("TOTAL", 0)
                     _focusMode.value = intent.getStringExtra("MODE") ?: "Study"
+                    _isSessionStrictMode.value = intent.getBooleanExtra("STRICT_MODE", false)
                 }
                 "com.example.FOCUS_TIMER_FINISHED", "com.example.FOCUS_TIMER_ABORTED" -> {
                     _isFocusActive.value = false
                     _focusRemainingSeconds.value = 0
                     _focusTotalSeconds.value = 0
+                    _isSessionStrictMode.value = false
                     viewModelScope.launch {
                         updateRepliesTodayCount()
                     }
@@ -122,6 +127,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             checkNotificationAccess()
             updateRepliesTodayCount()
             checkAndApplyScheduleAutomation()
+            checkAutoLogin()
         }
 
         // Register local broadcast receiver for notification replies updates
@@ -202,6 +208,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return calendar.timeInMillis
     }
 
+    fun checkAutoLogin() {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val savedEmail = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                .getString("logged_in_user_email", null)
+            if (savedEmail != null) {
+                val user = repository.getUserByEmail(savedEmail)
+                if (user != null) {
+                    _currentUser.value = user
+                    _currentScreen.value = "DASHBOARD"
+                }
+            }
+        }
+    }
+
     // --- Authentication Actions ---
     fun login(email: String, password: String) {
         viewModelScope.launch {
@@ -211,6 +232,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             val user = repository.getUserByEmail(email)
             if (user != null && user.password == password) {
+                val context = getApplication<Application>()
+                context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putString("logged_in_user_email", email)
+                    .apply()
+
                 _currentUser.value = user
                 _authStateMessage.value = null
                 _currentScreen.value = "DASHBOARD"
@@ -220,9 +247,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun register(name: String, email: String, password: String) {
+    fun register(name: String, email: String, password: String, phoneNumber: String, botName: String) {
         viewModelScope.launch {
-            if (name.isBlank() || email.isBlank() || password.isBlank()) {
+            if (name.isBlank() || email.isBlank() || password.isBlank() || phoneNumber.isBlank() || botName.isBlank()) {
                 _authStateMessage.value = "All fields are required"
                 return@launch
             }
@@ -231,8 +258,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 _authStateMessage.value = "Email is already registered"
                 return@launch
             }
-            val newUser = UserEntity(name = name, email = email, password = password)
+            val newUser = UserEntity(name = name, email = email, password = password, phoneNumber = phoneNumber, botName = botName)
             repository.registerUser(newUser)
+
+            val context = getApplication<Application>()
+            context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putString("logged_in_user_email", email)
+                .apply()
+
             _currentUser.value = newUser
             _authStateMessage.value = null
             _currentScreen.value = "DASHBOARD"
@@ -255,6 +289,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        val context = getApplication<Application>()
+        context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .remove("logged_in_user_email")
+            .apply()
+
         _currentUser.value = null
         _currentScreen.value = "LOGIN"
     }
@@ -429,6 +469,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateHabitsOrder(orderedList: List<HabitEntity>) {
+        viewModelScope.launch {
+            val updatedList = orderedList.mapIndexed { index, habit ->
+                habit.copy(orderIndex = index)
+            }
+            updatedList.forEach { repository.saveHabit(it) }
+        }
+    }
+
     // --- Focus Actions ---
     fun startFocusSession(context: Context, durationMinutes: Int, mode: String, strictMode: Boolean) {
         val intent = Intent(context, FocusTimerService::class.java).apply {
@@ -443,6 +492,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun stopFocusSession(context: Context) {
         val intent = Intent(context, FocusTimerService::class.java).apply {
             action = "STOP"
+        }
+        context.startService(intent)
+    }
+
+    fun toggleStrictModeInSession(context: Context, enabled: Boolean) {
+        _isSessionStrictMode.value = enabled
+        val intent = Intent(context, FocusTimerService::class.java).apply {
+            action = "UPDATE_STRICT"
+            putExtra("STRICT_MODE", enabled)
         }
         context.startService(intent)
     }
@@ -532,10 +590,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val baseReply = activeStatus?.replyMessage ?: "Hi! I am currently busy. I will get back to you soon."
 
             // 5. Generate Reply (AI vs Base Status Reply)
+            val context = getApplication<Application>()
+            val savedEmail = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                .getString("logged_in_user_email", null)
+            val user = if (savedEmail != null) repository.getUserByEmail(savedEmail) else repository.getAnyUser()
+            val formattedBaseReply = formatReplyMessage(baseReply, user)
+
             val finalReplyText = if (activeModeName.lowercase() == "ai assistant" || activeModeName.lowercase().contains("ai")) {
-                GeminiClient.generateSmartReply(baseReply, messageText)
+                GeminiClient.generateSmartReply(formattedBaseReply, messageText)
             } else {
-                baseReply
+                formattedBaseReply
             }
 
             // 6. Record to history
@@ -550,5 +614,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             onComplete("Replied to $senderName: \"$finalReplyText\"")
         }
+    }
+
+    private fun formatReplyMessage(message: String, user: UserEntity?): String {
+        if (user == null) return message
+        return message
+            .replace("{BOT_NAME}", user.botName.ifBlank { "TAFE" })
+            .replace("{NAME}", user.name.ifBlank { "Administrator" })
+            .replace("{PHONE_NUMBER}", user.phoneNumber.ifBlank { "+91 94872 84227" })
     }
 }

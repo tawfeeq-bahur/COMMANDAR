@@ -8,7 +8,9 @@ data class UserEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val name: String,
     val email: String,
-    val password: String
+    val password: String,
+    val phoneNumber: String = "",
+    val botName: String = ""
 )
 
 @Entity(tableName = "statuses")
@@ -68,7 +70,8 @@ data class HabitEntity(
     val frequency: String = "DAILY",
     val iconName: String = "Dumbbell",
     val isEnabled: Boolean = true,
-    val streakDays: Int = 0
+    val streakDays: Int = 0,
+    val orderIndex: Int = 0
 )
 
 @Entity(tableName = "habit_logs")

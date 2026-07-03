@@ -47,13 +47,48 @@ class AppRepository(private val appDao: AppDao) {
         val existingStatuses = appDao.getAllStatuses()
         if (existingStatuses.isEmpty()) {
             val defaultStatuses = listOf(
-                StatusEntity(name = "Study", replyMessage = "I am currently studying. I will reply later.", isCustom = false, iconName = "School"),
-                StatusEntity(name = "Gym", replyMessage = "I am currently at the gym. I will respond once I finish.", isCustom = false, iconName = "Fitness"),
-                StatusEntity(name = "Prayer", replyMessage = "I am currently praying. I will reply shortly.", isCustom = false, iconName = "SelfImprovement"),
-                StatusEntity(name = "Meeting", replyMessage = "I am currently in a meeting. I will get back to you soon.", isCustom = false, iconName = "MeetingRoom"),
-                StatusEntity(name = "Sleep", replyMessage = "I am sleeping right now. I will respond when I wake up.", isCustom = false, iconName = "Bedtime"),
-                StatusEntity(name = "Driving", replyMessage = "I am currently driving. I cannot respond immediately.", isCustom = false, iconName = "DirectionsCar"),
-                StatusEntity(name = "Work", replyMessage = "Hi, I am currently working on my FleetFlow project. I will respond once I am available.", isCustom = true, iconName = "Work")
+                StatusEntity(
+                    name = "Study",
+                    replyMessage = "📚 Study\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently focused on personal development and is temporarily unavailable. Your message has been safely received, and he will respond as soon as possible.\n\nFor urgent matters, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience.",
+                    isCustom = false,
+                    iconName = "School"
+                ),
+                StatusEntity(
+                    name = "Gym",
+                    replyMessage = "🏋️ Gym\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently at the gym and is unavailable at the moment. Your message has been received, and he will respond as soon as he is available.\n\nFor urgent matters, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience.",
+                    isCustom = false,
+                    iconName = "Fitness"
+                ),
+                StatusEntity(
+                    name = "Prayer",
+                    replyMessage = "🕌 Prayer\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently attending prayer and may not be able to respond immediately. Once he becomes available, he will review your message and get back to you as soon as possible.\n\nIf your matter is urgent, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience and understanding.",
+                    isCustom = false,
+                    iconName = "SelfImprovement"
+                ),
+                StatusEntity(
+                    name = "Meeting",
+                    replyMessage = "💼 Work / Meeting\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently engaged in work and may not be able to reply immediately. Your message is important and will be reviewed as soon as possible.\n\nFor urgent assistance, please contact {PHONE_NUMBER}.\n\nThank you for reaching out.",
+                    isCustom = false,
+                    iconName = "MeetingRoom"
+                ),
+                StatusEntity(
+                    name = "Sleep",
+                    replyMessage = "😴 Sleep\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently unavailable and resting. Your message has been received and will be addressed once he is back online.\n\nIf the matter is urgent, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience and understanding.",
+                    isCustom = false,
+                    iconName = "Bedtime"
+                ),
+                StatusEntity(
+                    name = "Driving",
+                    replyMessage = "🚗 Driving\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently driving and cannot respond immediately for safety reasons. He will check your message as soon as he reaches his destination.\n\nFor urgent matters, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your understanding.",
+                    isCustom = false,
+                    iconName = "DirectionsCar"
+                ),
+                StatusEntity(
+                    name = "Work",
+                    replyMessage = "💼 Work / Meeting\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently engaged in work and may not be able to reply immediately. Your message is important and will be reviewed as soon as possible.\n\nFor urgent assistance, please contact {PHONE_NUMBER}.\n\nThank you for reaching out.",
+                    isCustom = true,
+                    iconName = "Work"
+                )
             )
             for (status in defaultStatuses) {
                 appDao.insertStatus(status)
@@ -117,6 +152,10 @@ class AppRepository(private val appDao: AppDao) {
     // --- User Profile ---
     suspend fun getUserByEmail(email: String): UserEntity? = withContext(Dispatchers.IO) {
         appDao.getUserByEmail(email)
+    }
+
+    suspend fun getAnyUser(): UserEntity? = withContext(Dispatchers.IO) {
+        appDao.getAnyUser()
     }
 
     suspend fun registerUser(user: UserEntity) = withContext(Dispatchers.IO) {

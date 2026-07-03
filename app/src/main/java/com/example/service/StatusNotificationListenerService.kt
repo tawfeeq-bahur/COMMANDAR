@@ -1,21 +1,30 @@
 package com.example.service
 
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
 import android.content.ContentUris
+import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import com.example.data.AppRepository
 import com.example.data.local.AppDatabase
 import com.example.data.local.ReplyHistoryEntity
+import com.example.data.local.SettingsEntity
+import com.example.data.local.HabitEntity
+import com.example.data.local.HabitLogEntity
 import com.example.data.remote.GeminiClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -33,11 +42,94 @@ class StatusNotificationListenerService : NotificationListenerService() {
         Log.d("StatusListener", "Service created")
         database = AppDatabase.getDatabase(this)
         repository = AppRepository(database.appDao())
+
+        // Launch a coroutine to combine settings, habits, and logs flows for persistent Secretary notification updates
+        serviceScope.launch(Dispatchers.IO) {
+            val todayDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+            combine(
+                repository.settingsFlow,
+                database.appDao().getAllHabitsFlow(),
+                database.appDao().getHabitLogsForDateFlow(todayDateStr)
+            ) { settings, habits, logs ->
+                if (settings == null) return@combine null
+                val completedIds = logs.filter { it.isCompleted }.map { it.habitId }.toSet()
+                val pending = habits.filter { !completedIds.contains(it.id) }
+                Pair(settings, pending)
+            }.collect { pair ->
+                if (pair == null) return@collect
+                val (settings, pending) = pair
+                
+                if (!FocusTimerService.isSessionActive) {
+                    updateSecretaryNotification(settings, pending)
+                } else {
+                    val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                    notificationManager.cancel(SECRETARY_NOTIFICATION_ID)
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         job.cancel()
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(SECRETARY_NOTIFICATION_ID)
+    }
+
+    private fun updateSecretaryNotification(settings: SettingsEntity, pendingHabits: List<HabitEntity>) {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        createSecretaryNotificationChannel(notificationManager)
+
+        val autoReplyState = if (settings.isAutoReplyEnabled) "ON (Preset: ${settings.activeStatusName})" else "OFF"
+        val pendingText = if (pendingHabits.isEmpty()) {
+            "All routines completed today! 🎉"
+        } else {
+            pendingHabits.joinToString(", ") { it.name }
+        }
+
+        val openIntent = Intent(this, com.example.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingOpenIntent = PendingIntent.getActivity(
+            this, 0, openIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(this, SECRETARY_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+            .setContentTitle("COMMANDAR Secretary Status")
+            .setContentText("Auto-Reply: $autoReplyState")
+            .setStyle(NotificationCompat.BigTextStyle()
+                .bigText("Auto-Reply is $autoReplyState\n\nPending Routines:\n$pendingText")
+            )
+            .setContentIntent(pendingOpenIntent)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+
+        // Add action buttons to complete pending habits directly
+        pendingHabits.take(2).forEach { habit ->
+            val completeIntent = Intent(this, HabitActionReceiver::class.java).apply {
+                putExtra("HABIT_ID", habit.id)
+            }
+            val pendingCompleteIntent = PendingIntent.getBroadcast(
+                this, habit.id + 3000, completeIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            )
+            builder.addAction(android.R.drawable.checkbox_on_background, "Done: ${habit.name}", pendingCompleteIntent)
+        }
+
+        notificationManager.notify(SECRETARY_NOTIFICATION_ID, builder.build())
+    }
+
+    private fun createSecretaryNotificationChannel(manager: NotificationManager) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                SECRETARY_CHANNEL_ID,
+                "COMMANDAR Status",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Persistent status and quick action routines tracker"
+            }
+            manager.createNotificationChannel(channel)
+        }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
@@ -64,6 +156,16 @@ class StatusNotificationListenerService : NotificationListenerService() {
                 return
             }
 
+            // Ignore notifications originating from our own application
+            if (packageName == this.packageName) {
+                return
+            }
+
+            // Ignore outgoing messages sent by the user (prefixed with 'You')
+            if (text.startsWith("You:") || text.startsWith("You: ") || text.startsWith("You \u200E:")) {
+                return
+            }
+
             serviceScope.launch {
                 try {
                     handleIncomingMessage(sbn, title, text)
@@ -77,11 +179,14 @@ class StatusNotificationListenerService : NotificationListenerService() {
     private suspend fun handleIncomingMessage(sbn: StatusBarNotification, senderName: String, messageText: String) {
         val now = System.currentTimeMillis()
 
-        // 1. In-memory contact lock: check if we are currently/recently processing this contact
-        val lastProcessingTime = activeProcessingContacts[senderName]
-        if (lastProcessingTime != null && (now - lastProcessingTime) < 10000L) { // 10 seconds lock
-            Log.d("StatusListener", "In-memory debounce active: already processing reply for $senderName in the last 10s")
-            return
+        // 1. In-memory contact lock with thread-safe synchronization to prevent race conditions
+        synchronized(activeProcessingContacts) {
+            val lastProcessingTime = activeProcessingContacts[senderName]
+            if (lastProcessingTime != null && (now - lastProcessingTime) < 8000L) { // 8 seconds lock
+                Log.d("StatusListener", "In-memory debounce active: already processing reply for $senderName in the last 8s")
+                return
+            }
+            activeProcessingContacts[senderName] = now
         }
 
         // 2. In-memory message duplicate check: check if we already replied to the exact same message text from this contact recently
@@ -90,9 +195,6 @@ class StatusNotificationListenerService : NotificationListenerService() {
             Log.d("StatusListener", "Duplicate check active: already replied to same message '$messageText' from $senderName in the last 60s")
             return
         }
-
-        // Acquire lock
-        activeProcessingContacts[senderName] = now
 
         try {
             val settings = repository.getSettings() ?: return
@@ -141,8 +243,14 @@ class StatusNotificationListenerService : NotificationListenerService() {
 
             val baseReply = activeStatus?.replyMessage ?: "Hi! I am currently busy. I will get back to you soon."
 
+            // Fetch active user to substitute placeholders
+            val savedEmail = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+                .getString("logged_in_user_email", null)
+            val user = if (savedEmail != null) repository.getUserByEmail(savedEmail) else database.appDao().getAnyUser()
+            val formattedBaseReply = formatReplyMessage(baseReply, user)
+
             // Resolve availability context containing active timer and calendar details
-            var availabilityContext = baseReply
+            var availabilityContext = formattedBaseReply
             if (FocusTimerService.isSessionActive) {
                 val remainingMins = FocusTimerService.sessionRemainingSeconds / 60
                 availabilityContext += " (I'm currently in focus mode: '${FocusTimerService.currentSessionMode}' with $remainingMins minutes remaining)."
@@ -158,13 +266,7 @@ class StatusNotificationListenerService : NotificationListenerService() {
                 // Call Gemini with rich availability context
                 GeminiClient.generateSmartReply(availabilityContext, messageText)
             } else {
-                // For standard replies, dynamically append the timer if focus session is active
-                if (FocusTimerService.isSessionActive) {
-                    val remainingMins = FocusTimerService.sessionRemainingSeconds / 60
-                    "$baseReply (Expected available in $remainingMins mins)"
-                } else {
-                    baseReply
-                }
+                formattedBaseReply
             }
 
             // 8. Attempt Notification Action Reply
@@ -273,9 +375,20 @@ class StatusNotificationListenerService : NotificationListenerService() {
         }
     }
 
+    private fun formatReplyMessage(message: String, user: com.example.data.local.UserEntity?): String {
+        if (user == null) return message
+        return message
+            .replace("{BOT_NAME}", user.botName.ifBlank { "TAFE" })
+            .replace("{NAME}", user.name.ifBlank { "Administrator" })
+            .replace("{PHONE_NUMBER}", user.phoneNumber.ifBlank { "+91 94872 84227" })
+    }
+
     data class LastRepliedInfo(val messageText: String, val timestamp: Long)
 
     companion object {
+        const val SECRETARY_NOTIFICATION_ID = 1004
+        const val SECRETARY_CHANNEL_ID = "SecretaryStatusChannel"
+
         private val lastRepliedMessages = java.util.concurrent.ConcurrentHashMap<String, LastRepliedInfo>()
         private val activeProcessingContacts = java.util.concurrent.ConcurrentHashMap<String, Long>()
 

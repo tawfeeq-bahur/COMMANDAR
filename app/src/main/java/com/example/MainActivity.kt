@@ -14,10 +14,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -58,6 +66,18 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         appViewModel = androidx.lifecycle.ViewModelProvider(this)[AppViewModel::class.java]
+
+        // Request POST_NOTIFICATIONS runtime permission on Android 13+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val permission = android.Manifest.permission.POST_NOTIFICATIONS
+            if (checkSelfPermission(permission) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(permission), 101)
+            }
+        }
+
+        // Schedule daily routine reminders
+        com.example.service.RoutineReminderReceiver.scheduleDailyRoutineReminder(this)
+
         setContent {
             val settingsState by appViewModel.settings.collectAsState()
 
@@ -277,6 +297,8 @@ fun RegisterScreen(viewModel: AppViewModel) {
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var phoneNumber by remember { mutableStateOf("") }
+    var botName by remember { mutableStateOf("") }
     val authMessage by viewModel.authStateMessage.collectAsState()
 
     Box(
@@ -289,13 +311,13 @@ fun RegisterScreen(viewModel: AppViewModel) {
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 32.dp, vertical = 48.dp),
+                .padding(horizontal = 32.dp, vertical = 32.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 24.dp)
+                    .padding(top = 16.dp)
             ) {
                 Icon(
                     imageVector = Icons.Filled.PersonAdd,
@@ -303,7 +325,7 @@ fun RegisterScreen(viewModel: AppViewModel) {
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(36.dp)
                 )
-                Spacer(modifier = Modifier.height(28.dp))
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
                     text = "Create Account",
                     style = MaterialTheme.typography.headlineLarge,
@@ -311,16 +333,20 @@ fun RegisterScreen(viewModel: AppViewModel) {
                     color = MaterialTheme.colorScheme.primary,
                     letterSpacing = (-0.5).sp
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Establish a localized auto-reply schedule managed by AI.",
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+                    .padding(vertical = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 OutlinedTextField(
@@ -365,6 +391,33 @@ fun RegisterScreen(viewModel: AppViewModel) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                 )
 
+                OutlinedTextField(
+                    value = phoneNumber,
+                    onValueChange = { phoneNumber = it },
+                    label = { Text("Phone Number", style = MaterialTheme.typography.bodyMedium) },
+                    modifier = Modifier.fillMaxWidth().testTag("phone_register_input"),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    ),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone)
+                )
+
+                OutlinedTextField(
+                    value = botName,
+                    onValueChange = { botName = it },
+                    label = { Text("Bot Name (e.g. ECHO)", style = MaterialTheme.typography.bodyMedium) },
+                    modifier = Modifier.fillMaxWidth().testTag("bot_register_input"),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    )
+                )
+
                 authMessage?.let {
                     Text(
                         text = it,
@@ -378,7 +431,7 @@ fun RegisterScreen(viewModel: AppViewModel) {
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Button(
-                    onClick = { viewModel.register(name, email, password) },
+                    onClick = { viewModel.register(name, email, password, phoneNumber, botName) },
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
@@ -553,7 +606,7 @@ fun MainAppScaffold(viewModel: AppViewModel) {
                             selected = isSelected,
                             onClick = { viewModel.navigateTo(screenId) },
                             icon = { Icon(icon, contentDescription = label, modifier = Modifier.size(20.dp)) },
-                            label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                            label = { Text(label, style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.2.sp), maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             colors = NavigationBarItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.primary,
                                 selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -601,6 +654,7 @@ fun DashboardScreen(viewModel: AppViewModel) {
     val todayLogs by viewModel.todayLogs.collectAsState()
     val focusSessions by viewModel.focusSessions.collectAsState()
     val history by viewModel.history.collectAsState()
+    val isSessionStrictMode by viewModel.isSessionStrictMode.collectAsState()
 
     val isTimerActive by viewModel.isFocusActive.collectAsState()
     val remainingSeconds by viewModel.focusRemainingSeconds.collectAsState()
@@ -775,6 +829,23 @@ fun DashboardScreen(viewModel: AppViewModel) {
                             ) {
                                 Text("Shield ACTIVE", color = Color.White, style = MaterialTheme.typography.labelSmall)
                             }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Strict Mode App Blocking",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Switch(
+                                checked = isSessionStrictMode,
+                                onCheckedChange = { viewModel.toggleStrictModeInSession(context, it) }
+                            )
                         }
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(
@@ -1057,10 +1128,20 @@ fun FocusScreen(viewModel: AppViewModel) {
     val focusTotalSeconds by viewModel.focusTotalSeconds.collectAsState()
     val focusModeName by viewModel.focusMode.collectAsState()
     val settings by viewModel.settings.collectAsState()
+    val isSessionStrictMode by viewModel.isSessionStrictMode.collectAsState()
 
-    var selectedMode by remember { mutableStateOf("Study") }
+    var selectedMode by remember { mutableStateOf<String?>(null) }
     var selectedDurationMinutes by remember { mutableStateOf(25f) }
     var strictModeEnabled by remember { mutableStateOf(false) }
+    var showManageFocusModesDialog by remember { mutableStateOf(false) }
+
+    val focusModes by viewModel.statuses.collectAsState()
+
+    LaunchedEffect(isTimerActive) {
+        if (!isTimerActive) {
+            selectedMode = null
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -1077,13 +1158,25 @@ fun FocusScreen(viewModel: AppViewModel) {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 item {
-                    Text(
-                        text = "FOCUS ENGINE",
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 16.dp)
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "FOCUS ENGINE",
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        IconButton(onClick = { showManageFocusModesDialog = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.Edit,
+                                contentDescription = "Manage Focus Modes",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                     Text(
                         text = "Select your preset focus mode below.",
                         style = MaterialTheme.typography.bodyLarge,
@@ -1093,30 +1186,58 @@ fun FocusScreen(viewModel: AppViewModel) {
 
                 // Modes Preset Grid
                 item {
-                    val presets = listOf("Study", "Gym", "Prayer", "Work", "Sleep", "Meeting")
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        for (i in presets.indices step 3) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text("Select Focus Mode", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                            Spacer(modifier = Modifier.height(12.dp))
+                            
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(144.dp)
                             ) {
-                                for (j in 0 until 3) {
-                                    if (i + j < presets.size) {
-                                        val mode = presets[i + j]
-                                        val isSelected = selectedMode == mode
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(3),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    items(focusModes) { status ->
+                                        val isSelected = selectedMode == status.name
                                         Card(
-                                            onClick = { selectedMode = mode },
+                                            onClick = { selectedMode = status.name },
                                             colors = CardDefaults.cardColors(
-                                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+                                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                                             ),
                                             shape = RoundedCornerShape(12.dp),
-                                            modifier = Modifier.weight(1f).height(64.dp)
+                                            modifier = Modifier.fillMaxWidth().height(64.dp)
                                         ) {
                                             Box(
-                                                modifier = Modifier.fillMaxSize(),
+                                                modifier = Modifier.fillMaxSize().padding(4.dp),
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Text(mode, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                                                    Icon(
+                                                        imageVector = getStatusIcon(status.iconName),
+                                                        contentDescription = status.name,
+                                                        tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                    Text(
+                                                        text = status.name,
+                                                        fontWeight = FontWeight.Bold,
+                                                        style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 0.1.sp),
+                                                        fontSize = 11.sp,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -1251,11 +1372,12 @@ fun FocusScreen(viewModel: AppViewModel) {
                 // Start Button
                 item {
                     Button(
+                        enabled = selectedMode != null,
                         onClick = {
                             viewModel.startFocusSession(
                                 context,
                                 selectedDurationMinutes.toInt(),
-                                selectedMode,
+                                selectedMode!!,
                                 strictModeEnabled
                             )
                         },
@@ -1303,23 +1425,56 @@ fun FocusScreen(viewModel: AppViewModel) {
                         trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
                     )
 
-                    val minutes = remainingSeconds / 60
-                    val seconds = remainingSeconds % 60
-                    Text(
-                        text = String.format("%02d:%02d", minutes, seconds),
-                        style = MaterialTheme.typography.displayMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        val minutes = remainingSeconds / 60
+                        val seconds = remainingSeconds % 60
+                        Text(
+                            text = String.format("%02d:%02d", minutes, seconds),
+                            style = MaterialTheme.typography.displayMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        val elapsedSeconds = focusTotalSeconds - remainingSeconds
+                        val elapsedMins = elapsedSeconds / 60
+                        val elapsedSecs = elapsedSeconds % 60
+                        Text(
+                            text = String.format("%02d:%02d done", elapsedMins, elapsedSecs),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(32.dp))
+                Spacer(modifier = Modifier.height(16.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Strict App Blocker",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Switch(
+                            checked = isSessionStrictMode,
+                            onCheckedChange = { viewModel.toggleStrictModeInSession(context, it) }
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "Shield is blocking notification alerts.",
+                    text = if (isSessionStrictMode) "Shield is blocking app distractions and notifications." else "Shield is blocking notification alerts.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 
-                Spacer(modifier = Modifier.height(48.dp))
+                Spacer(modifier = Modifier.height(32.dp))
                 Button(
                     onClick = { viewModel.stopFocusSession(context) },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
@@ -1327,6 +1482,93 @@ fun FocusScreen(viewModel: AppViewModel) {
                     modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
                     Text("End Session Early (Penalizes XP)", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    if (showManageFocusModesDialog) {
+        Dialog(onDismissRequest = { showManageFocusModesDialog = false }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(550.dp)
+                    .padding(8.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Manage Focus Modes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { showManageFocusModesDialog = false }) { Text("Close") }
+                    }
+
+                    var presetName by remember { mutableStateOf("") }
+                    var presetMsg by remember { mutableStateOf("") }
+                    var selectedIcon by remember { mutableStateOf("School") }
+
+                    // Boilerplate templates selector
+                    Text("Select Template Boilerplate", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val boilerplates = listOf(
+                            Triple("Study", "School", "📚 Study\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently focused on personal development and is temporarily unavailable. Your message has been safely received, and he will respond as soon as possible.\n\nFor urgent matters, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience."),
+                            Triple("Gym", "Fitness", "🏋️ Gym\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently at the gym and is unavailable at the moment. Your message has been received, and he will respond as soon as he is available.\n\nFor urgent matters, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience."),
+                            Triple("Prayer", "SelfImprovement", "🕌 Prayer\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently attending prayer and may not be able to respond immediately. Once he becomes available, he will review your message and get back to you as soon as possible.\n\nIf your matter is urgent, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience and understanding."),
+                            Triple("Work", "Work", "💼 Work / Meeting\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently engaged in work and may not be able to reply immediately. Your message is important and will be reviewed as soon as possible.\n\nFor urgent assistance, please contact {PHONE_NUMBER}.\n\nThank you for reaching out."),
+                            Triple("Sleep", "Bedtime", "😴 Sleep\n\nHello, I'm {BOT_NAME}, the virtual assistant.\n\nMy administrator is currently unavailable and resting. Your message has been received and will be addressed once he is back online.\n\nIf the matter is urgent, please contact him directly at {PHONE_NUMBER}.\n\nThank you for your patience and understanding.")
+                        )
+                        items(boilerplates) { (title, icon, message) ->
+                            FilterChip(
+                                selected = presetName.lowercase() == title.lowercase(),
+                                onClick = {
+                                    presetName = title
+                                    presetMsg = message
+                                    selectedIcon = icon
+                                },
+                                label = { Text(title) }
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = presetName,
+                        onValueChange = { presetName = it },
+                        label = { Text("Focus Mode Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
+                    OutlinedTextField(
+                        value = presetMsg,
+                        onValueChange = { presetMsg = it },
+                        label = { Text("Auto-Reply Message") },
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        maxLines = 6
+                    )
+
+                    Button(
+                        onClick = {
+                            if (presetName.isNotBlank() && presetMsg.isNotBlank()) {
+                                viewModel.addCustomStatus(presetName, presetMsg, selectedIcon)
+                                presetName = ""
+                                presetMsg = ""
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Add / Update Custom Focus Mode")
+                    }
                 }
             }
         }
@@ -1345,6 +1587,15 @@ fun HabitsScreen(viewModel: AppViewModel) {
 
     var showAddHabitDialog by remember { mutableStateOf(false) }
     var newHabitName by remember { mutableStateOf("") }
+
+    val listState = remember { mutableStateListOf<HabitEntity>() }
+    LaunchedEffect(habits) {
+        listState.clear()
+        listState.addAll(habits)
+    }
+
+    var draggingIndex by remember { mutableStateOf(-1) }
+    var dragYOffset by remember { mutableStateOf(0f) }
 
     Box(
         modifier = Modifier
@@ -1412,15 +1663,69 @@ fun HabitsScreen(viewModel: AppViewModel) {
                     )
                 }
             } else {
-                items(habits) { habit ->
+                items(listState, key = { it.id }) { habit ->
                     val isChecked = todayLogs.find { it.habitId == habit.id }?.isCompleted == true
+                    val itemHeightPx = 250f // approximate height in pixels
+
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = if (isChecked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surface
                         ),
                         border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f)),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .pointerInput(habit.id) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        draggingIndex = listState.indexOf(habit)
+                                        dragYOffset = 0f
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        dragYOffset += dragAmount.y
+
+                                        val currentIndex = listState.indexOf(habit)
+                                        if (currentIndex != -1) {
+                                            if (dragYOffset > itemHeightPx / 2 && currentIndex < listState.size - 1) {
+                                                // Swap with next
+                                                val next = currentIndex + 1
+                                                val temp = listState[currentIndex]
+                                                listState[currentIndex] = listState[next]
+                                                listState[next] = temp
+                                                dragYOffset -= itemHeightPx
+                                                draggingIndex = next
+                                            } else if (dragYOffset < -itemHeightPx / 2 && currentIndex > 0) {
+                                                // Swap with previous
+                                                val prev = currentIndex - 1
+                                                val temp = listState[currentIndex]
+                                                listState[currentIndex] = listState[prev]
+                                                listState[prev] = temp
+                                                dragYOffset += itemHeightPx
+                                                draggingIndex = prev
+                                            }
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        draggingIndex = -1
+                                        dragYOffset = 0f
+                                        viewModel.updateHabitsOrder(listState)
+                                    },
+                                    onDragCancel = {
+                                        draggingIndex = -1
+                                        dragYOffset = 0f
+                                    }
+                                )
+                            }
+                            .graphicsLayer {
+                                val currentIndex = listState.indexOf(habit)
+                                val isDragging = draggingIndex == currentIndex
+                                translationY = if (isDragging) dragYOffset else 0f
+                                scaleX = if (isDragging) 1.03f else 1f
+                                scaleY = if (isDragging) 1.03f else 1f
+                                alpha = if (isDragging) 0.85f else 1f
+                                shadowElevation = if (isDragging) 8f else 0f
+                            }
                     ) {
                         Row(
                             modifier = Modifier.padding(16.dp),
@@ -1943,8 +2248,8 @@ fun SettingsScreen(viewModel: AppViewModel) {
                     var action by remember { mutableStateOf("AUTO_REPLY") }
 
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Contact Rules Whitelist", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Contact Rules Whitelist", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             TextButton(onClick = { activeConfigDialog = null }) { Text("Close") }
                         }
                         
@@ -1960,7 +2265,7 @@ fun SettingsScreen(viewModel: AppViewModel) {
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Column {
+                                            Column(modifier = Modifier.weight(1f)) {
                                                 Text(rule.contactName, fontWeight = FontWeight.Bold)
                                                 Text("Action: ${rule.action}", style = MaterialTheme.typography.bodySmall)
                                             }
@@ -2013,8 +2318,8 @@ fun SettingsScreen(viewModel: AppViewModel) {
                     var mode by remember { mutableStateOf("Study") }
 
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Automated Schedules", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Automated Schedules", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             TextButton(onClick = { activeConfigDialog = null }) { Text("Close") }
                         }
 
@@ -2030,7 +2335,7 @@ fun SettingsScreen(viewModel: AppViewModel) {
                                             horizontalArrangement = Arrangement.SpaceBetween,
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Column {
+                                            Column(modifier = Modifier.weight(1f)) {
                                                 Text("Time: ${sch.startTime} - ${sch.endTime}", fontWeight = FontWeight.Bold)
                                                 Text("Mode: ${sch.modeName}", style = MaterialTheme.typography.bodySmall)
                                             }
@@ -2044,8 +2349,20 @@ fun SettingsScreen(viewModel: AppViewModel) {
                         }
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(value = start, onValueChange = { start = it }, label = { Text("Start HH:MM") }, modifier = Modifier.weight(1f))
-                            OutlinedTextField(value = end, onValueChange = { end = it }, label = { Text("End HH:MM") }, modifier = Modifier.weight(1f))
+                            OutlinedTextField(
+                                value = start,
+                                onValueChange = { start = it },
+                                label = { Text("Start") },
+                                placeholder = { Text("HH:MM") },
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = end,
+                                onValueChange = { end = it },
+                                label = { Text("End") },
+                                placeholder = { Text("HH:MM") },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                         OutlinedTextField(value = mode, onValueChange = { mode = it }, label = { Text("Mode Name") }, modifier = Modifier.fillMaxWidth())
                         Button(
@@ -2076,8 +2393,8 @@ fun SettingsScreen(viewModel: AppViewModel) {
                     var msg by remember { mutableStateOf("") }
 
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Custom Status Presets", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Custom Status Presets", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             TextButton(onClick = { activeConfigDialog = null }) { Text("Close") }
                         }
 

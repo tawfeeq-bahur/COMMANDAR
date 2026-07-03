@@ -10,6 +10,9 @@ interface AppDao {
     @Query("SELECT * FROM users WHERE email = :email LIMIT 1")
     suspend fun getUserByEmail(email: String): UserEntity?
 
+    @Query("SELECT * FROM users LIMIT 1")
+    suspend fun getAnyUser(): UserEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertUser(user: UserEntity)
 
@@ -91,10 +94,10 @@ interface AppDao {
     suspend fun insertSettings(settings: SettingsEntity)
 
     // --- Habit Queries ---
-    @Query("SELECT * FROM habits ORDER BY id ASC")
+    @Query("SELECT * FROM habits ORDER BY orderIndex ASC, id ASC")
     fun getAllHabitsFlow(): Flow<List<HabitEntity>>
 
-    @Query("SELECT * FROM habits ORDER BY id ASC")
+    @Query("SELECT * FROM habits ORDER BY orderIndex ASC, id ASC")
     suspend fun getAllHabits(): List<HabitEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

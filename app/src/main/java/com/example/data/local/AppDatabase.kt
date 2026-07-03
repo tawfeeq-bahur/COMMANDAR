@@ -18,7 +18,7 @@ import androidx.room.RoomDatabase
         FocusSessionEntity::class,
         ForestCellEntity::class
     ],
-    version = 3,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

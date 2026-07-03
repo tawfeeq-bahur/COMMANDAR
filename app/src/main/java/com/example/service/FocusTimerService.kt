@@ -12,8 +12,10 @@ import androidx.core.app.NotificationCompat
 import com.example.data.local.AppDatabase
 import com.example.data.local.FocusSessionEntity
 import com.example.data.local.ForestCellEntity
+import com.example.data.local.HabitEntity
 import com.example.ui.BlockActivity
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.combine
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -33,6 +35,7 @@ class FocusTimerService : Service() {
     private var isStrictMode = false
     private var modeName = "Study"
     private var focusSessionId = 0L
+    private var pendingHabits: List<HabitEntity> = emptyList()
 
     companion object {
         const val CHANNEL_ID = "FocusTimerChannel"
@@ -50,6 +53,10 @@ class FocusTimerService : Service() {
         @Volatile
         var sessionRemainingSeconds = 0
             private set
+
+        @Volatile
+        var isSessionStrictMode = false
+            internal set
     }
 
     inner class LocalBinder : Binder() {
@@ -79,6 +86,28 @@ class FocusTimerService : Service() {
             "STOP" -> {
                 stopFocusSession(aborted = true)
             }
+            "UPDATE_STRICT" -> {
+                val enabled = intent.getBooleanExtra("STRICT_MODE", false)
+                isStrictMode = enabled
+                isSessionStrictMode = enabled
+                if (isStrictMode) {
+                    if (blockerJob == null || !blockerJob!!.isActive) {
+                        startAppBlocker()
+                    }
+                } else {
+                    blockerJob?.cancel()
+                    blockerJob = null
+                }
+                
+                // Broadcast update tick immediately
+                val tickIntent = Intent("com.example.FOCUS_TIMER_TICK").apply {
+                    putExtra("REMAINING", remainingSeconds)
+                    putExtra("TOTAL", totalSeconds)
+                    putExtra("MODE", modeName)
+                    putExtra("STRICT_MODE", isStrictMode)
+                }
+                sendBroadcast(tickIntent)
+            }
         }
         return START_NOT_STICKY
     }
@@ -89,6 +118,7 @@ class FocusTimerService : Service() {
         isSessionActive = true
         currentSessionMode = modeName
         sessionRemainingSeconds = remainingSeconds
+        isSessionStrictMode = isStrictMode
 
         // Create foreground notification
         val notification = createNotification()
@@ -118,6 +148,25 @@ class FocusTimerService : Service() {
             }
         }
 
+        // Observe pending habits reactively
+        serviceScope.launch(Dispatchers.IO) {
+            val database = AppDatabase.getDatabase(this@FocusTimerService)
+            val dao = database.appDao()
+            val todayDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+
+            combine(
+                dao.getAllHabitsFlow(),
+                dao.getHabitLogsForDateFlow(todayDateStr)
+            ) { habits, logs ->
+                val completedIds = logs.filter { it.isCompleted }.map { it.habitId }.toSet()
+                habits.filter { !completedIds.contains(it.id) }
+            }.collect { pending ->
+                pendingHabits = pending
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                notificationManager.notify(NOTIFICATION_ID, createNotification())
+            }
+        }
+
         // Start Countdown Timer Job
         timerJob = serviceScope.launch {
             while (remainingSeconds > 0) {
@@ -134,6 +183,7 @@ class FocusTimerService : Service() {
                     putExtra("REMAINING", remainingSeconds)
                     putExtra("TOTAL", totalSeconds)
                     putExtra("MODE", modeName)
+                    putExtra("STRICT_MODE", isStrictMode)
                 }
                 sendBroadcast(tickIntent)
             }
@@ -212,6 +262,7 @@ class FocusTimerService : Service() {
         blockerJob?.cancel()
         isSessionActive = false
         sessionRemainingSeconds = 0
+        isSessionStrictMode = false
 
         serviceScope.launch(Dispatchers.IO) {
             val database = AppDatabase.getDatabase(this@FocusTimerService)
@@ -253,7 +304,8 @@ class FocusTimerService : Service() {
                     currentSettings.copy(
                         currentXp = newXp,
                         userLevel = newLevel,
-                        activeFocusSessionId = 0
+                        activeFocusSessionId = 0,
+                        activeStatusName = "Work"
                     )
                 )
                 
@@ -301,13 +353,46 @@ class FocusTimerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Focus Shield ACTIVE - $modeName")
             .setContentText("Focus session in progress: $timeStr remaining.")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentIntent(pendingIntent)
+            .setProgress(totalSeconds, totalSeconds - remainingSeconds, false)
             .setOngoing(true)
-            .build()
+
+        // Show pending routines inside the notification
+        val pendingRoutinesText = if (pendingHabits.isEmpty()) {
+            "All routines completed today! 🎉"
+        } else {
+            pendingHabits.joinToString(", ") { it.name }
+        }
+
+        builder.setStyle(NotificationCompat.BigTextStyle()
+            .bigText("Focus session in progress: $timeStr remaining.\n\nPending Routines:\n$pendingRoutinesText")
+        )
+
+        // Add action button to abort focus session
+        val abortIntent = Intent(this, FocusTimerService::class.java).apply {
+            action = "STOP"
+        }
+        val pendingAbortIntent = PendingIntent.getService(
+            this, 999, abortIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Abort", pendingAbortIntent)
+
+        // Add action buttons to complete pending habits directly
+        pendingHabits.take(2).forEach { habit ->
+            val completeIntent = Intent(this, HabitActionReceiver::class.java).apply {
+                putExtra("HABIT_ID", habit.id)
+            }
+            val pendingCompleteIntent = PendingIntent.getBroadcast(
+                this, habit.id + 1000, completeIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            )
+            builder.addAction(android.R.drawable.checkbox_on_background, "Done: ${habit.name}", pendingCompleteIntent)
+        }
+
+        return builder.build()
     }
 
     private fun createNotificationChannel() {
